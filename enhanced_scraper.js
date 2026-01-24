@@ -34,20 +34,41 @@ const RATE_LIMIT_MS = 500; // Faster rate limit
 
 class EnhancedScraper {
     constructor() {
+        this.apiKey = process.env.BRIGHTDATA_API_KEY;
+        this.zone = 'web_unlocker1';
         this.client = axios.create({
-            httpsAgent: HTTPS_AGENT,
-            headers: HEADERS,
-            timeout: TIMEOUT,
+            timeout: 10000, // Apex Speed timeout
             validateStatus: () => true,
             maxRedirects: 5
         });
     }
 
-    /**
-     * Sleep utility for rate limiting
-     */
     async sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async _makeRequest(targetUrl, retries = 3) {
+        for (let i = 0; i < retries; i++) {
+            try {
+                const response = await this.client.post('https://api.brightdata.com/request', {
+                    zone: this.zone,
+                    url: targetUrl,
+                    format: 'raw'
+                }, {
+                    headers: {
+                        'Authorization': `Bearer ${this.apiKey}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (response.status === 200 && response.data) return response;
+                await this.sleep(1000);
+            } catch (error) {
+                if (i === retries - 1) return { status: 500, data: '' };
+                await this.sleep(1000);
+            }
+        }
+        return { status: 500, data: '' };
     }
 
     /**
@@ -58,80 +79,36 @@ class EnhancedScraper {
         const { maxPages = MAX_PAGES, includeDetails = false } = options;
         
         const nameSlug = name.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
-        const citySlug = city.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-');
-        const stateSlug = state.toLowerCase().trim();
+        const citySlug = city ? city.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().replace(/\s+/g, '-') : '';
+        const stateSlug = state ? state.toLowerCase().trim() : '';
         
-        const baseUrl = `https://www.cyberbackgroundchecks.com/people/${nameSlug}/${stateSlug}/${citySlug}`;
+        const baseUrl = citySlug 
+            ? `https://www.cyberbackgroundchecks.com/people/${nameSlug}/${stateSlug}/${citySlug}`
+            : `https://www.cyberbackgroundchecks.com/people/${nameSlug}/${stateSlug}`;
         
         let allCandidates = [];
         let currentPage = 1;
         let hasMorePages = true;
         
-        console.log(`[CBC] Starting paginated search for: ${name} in ${city}, ${state}`);
-        
         while (hasMorePages && currentPage <= maxPages) {
             const pageUrl = currentPage === 1 ? baseUrl : `${baseUrl}?page=${currentPage}`;
-            console.log(`[CBC] Fetching page ${currentPage}: ${pageUrl}`);
+            const response = await this._makeRequest(pageUrl);
             
-            try {
-                const response = await this.client.get(pageUrl);
-                
-                if (response.status !== 200) {
-                    console.warn(`[CBC] Page ${currentPage} returned status ${response.status}`);
-                    break;
-                }
-                
-                const $ = cheerio.load(response.data);
-                const pageCandidates = this._parseCBCResultsPage($);
-                
-                if (pageCandidates.length === 0) {
-                    console.log(`[CBC] No more candidates on page ${currentPage}. Stopping.`);
-                    hasMorePages = false;
-                } else {
-                    console.log(`[CBC] Found ${pageCandidates.length} candidates on page ${currentPage}`);
-                    allCandidates = allCandidates.concat(pageCandidates);
-                }
-                
-                // Check for next page link
-                const nextPageLink = $('a.page-link[aria-label="Next"]').attr('href') ||
-                                     $('a:contains("Next")').attr('href') ||
-                                     $('li.page-item:not(.disabled) a.page-link').last().attr('href');
-                
-                if (!nextPageLink || nextPageLink === '#') {
-                    hasMorePages = false;
-                }
-                
-                currentPage++;
-                
-                // Rate limiting
-                if (hasMorePages) {
-                    await this.sleep(RATE_LIMIT_MS);
-                }
-                
-            } catch (error) {
-                console.error(`[CBC] Error on page ${currentPage}:`, error.message);
+            if (response.status !== 200) break;
+            
+            const $ = cheerio.load(response.data);
+            const pageCandidates = this._parseCBCResultsPage($);
+            
+            if (pageCandidates.length === 0) {
                 hasMorePages = false;
+            } else {
+                allCandidates = allCandidates.concat(pageCandidates);
+                const nextPageLink = $('a.page-link[aria-label="Next"]').length > 0;
+                if (!nextPageLink) hasMorePages = false;
             }
+            currentPage++;
+            if (hasMorePages) await this.sleep(500);
         }
-        
-        console.log(`[CBC] Total candidates found across ${currentPage - 1} page(s): ${allCandidates.length}`);
-        
-        // Optionally fetch details for top candidates only (limit to 3 for speed)
-        if (includeDetails && allCandidates.length > 0) {
-            const topCandidates = allCandidates.slice(0, 3); // Only top 3
-            console.log(`[CBC] Fetching details for ${topCandidates.length} candidates (limited to 3)...`);
-            for (let i = 0; i < topCandidates.length; i++) {
-                const candidate = topCandidates[i];
-                if (candidate.detailLink) {
-                    const details = await this.getDetailsCBC(candidate.detailLink);
-                    if (details) {
-                        allCandidates[i] = { ...candidate, ...details };
-                    }
-                    await this.sleep(RATE_LIMIT_MS);
-                }
-            }
-        }
-        
         return allCandidates;
     }
 
@@ -201,83 +178,62 @@ class EnhancedScraper {
      * "Clicks" View Details by navigating to the detail URL
      */
     async getDetailsCBC(detailUrl) {
-        console.log(`[CBC] Fetching details: ${detailUrl}`);
-        
         try {
-            const response = await this.client.get(detailUrl);
-            
-            if (response.status !== 200) {
-                console.warn(`[CBC] Detail page returned status ${response.status}`);
-                return null;
-            }
+            const response = await this._makeRequest(detailUrl);
+            if (response.status !== 200) return null;
             
             const $ = cheerio.load(response.data);
             const details = {
                 detailsFetched: true,
                 allPhones: [],
                 allAddresses: [],
-                allEmails: [],
-                allRelatives: [],
-                possibleAssociates: []
+                allRelatives: []
             };
             
-            // Extract ALL phone numbers from detail page
+            // Extract phones
             $('a[href^="/phone/"], a[href^="tel:"], .phone-number, .phone').each((i, el) => {
-                const phoneText = $(el).text().trim();
-                const phoneNum = phoneText.replace(/[^\d]/g, '');
-                if (phoneNum.length >= 10 && !details.allPhones.includes(phoneText)) {
-                    details.allPhones.push(phoneText);
-                }
+                const phone = $(el).text().trim().replace(/[^\d]/g, '');
+                if (phone.length >= 10 && !details.allPhones.includes(phone)) details.allPhones.push(phone);
             });
             
-            // Also look for phone patterns in text
-            const pageText = $('body').text();
-            const phoneMatches = pageText.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g) || [];
-            phoneMatches.forEach(phone => {
-                const cleaned = phone.trim();
-                if (!details.allPhones.includes(cleaned)) {
-                    details.allPhones.push(cleaned);
-                }
-            });
-            
-            // All addresses
-            $('.address, [class*="address"]').each((i, el) => {
-                const addr = $(el).text().replace(/\s+/g, ' ').trim();
-                if (addr && addr.length > 10 && !details.allAddresses.includes(addr)) {
-                    details.allAddresses.push(addr);
-                }
-            });
-            
-            // All relatives
+            // Relatives
             $('.relative, [class*="relative"] a').each((i, el) => {
                 const rel = $(el).text().trim();
-                if (rel && !details.allRelatives.includes(rel)) {
-                    details.allRelatives.push(rel);
-                }
+                if (rel && !details.allRelatives.includes(rel)) details.allRelatives.push(rel);
             });
-            
-            // Possible associates
-            $('[class*="associate"] a, .associate').each((i, el) => {
-                const assoc = $(el).text().trim();
-                if (assoc && !details.possibleAssociates.includes(assoc)) {
-                    details.possibleAssociates.push(assoc);
-                }
-            });
-            
-            // Emails
-            $('a[href^="mailto:"]').each((i, el) => {
-                const email = $(el).text().trim();
-                if (email && !details.allEmails.includes(email)) {
-                    details.allEmails.push(email);
-                }
-            });
-            
-            console.log(`[CBC] Details extracted: ${details.allPhones.length} phones, ${details.allRelatives.length} relatives`);
             
             return details;
-            
         } catch (error) {
-            console.error(`[CBC] Error fetching details:`, error.message);
+            return null;
+        }
+    }
+
+    async getDetailsTPS(detailUrl) {
+        try {
+            const response = await this._makeRequest(detailUrl);
+            if (response.status !== 200) return null;
+            
+            const $ = cheerio.load(response.data);
+            const details = {
+                detailsFetched: true,
+                allPhones: [],
+                allRelatives: []
+            };
+            
+            // Extract phones from TPS profile
+            $('a[href^="tel:"], .phone, [data-link-to-more="phone"]').each((i, el) => {
+                const phone = $(el).text().trim().replace(/\D/g, '');
+                if (phone.length >= 10 && !details.allPhones.includes(phone)) details.allPhones.push(phone);
+            });
+            
+            // Relatives
+            $('a[href*="/find/person/"], .relative').each((i, el) => {
+                const rel = $(el).text().trim();
+                if (rel && rel.length > 3 && !details.allRelatives.includes(rel)) details.allRelatives.push(rel);
+            });
+            
+            return details;
+        } catch (error) {
             return null;
         }
     }
@@ -286,8 +242,7 @@ class EnhancedScraper {
      * Search TruePeopleSearch with pagination support
      */
     async searchTPSWithPagination(name, city, state, options = {}) {
-        const { maxPages = MAX_PAGES, includeDetails = false } = options;
-        
+        const { maxPages = MAX_PAGES } = options;
         const queryName = encodeURIComponent(name);
         const queryLoc = encodeURIComponent(`${city}, ${state}`);
         
@@ -295,55 +250,28 @@ class EnhancedScraper {
         let currentPage = 1;
         let hasMorePages = true;
         
-        console.log(`[TPS] Starting paginated search for: ${name} in ${city}, ${state}`);
-        
         while (hasMorePages && currentPage <= maxPages) {
-            const pageOffset = (currentPage - 1) * 10; // TPS uses offset
+            const pageOffset = (currentPage - 1) * 10;
             const url = currentPage === 1 
                 ? `https://www.truepeoplesearch.com/results?name=${queryName}&citystatezip=${queryLoc}`
                 : `https://www.truepeoplesearch.com/results?name=${queryName}&citystatezip=${queryLoc}&offset=${pageOffset}`;
             
-            console.log(`[TPS] Fetching page ${currentPage}: ${url}`);
+            const response = await this._makeRequest(url);
+            if (response.status !== 200) break;
             
-            try {
-                const response = await this.client.get(url);
-                
-                if (response.status !== 200) {
-                    console.warn(`[TPS] Page ${currentPage} returned status ${response.status}`);
-                    break;
-                }
-                
-                const $ = cheerio.load(response.data);
-                const pageCandidates = this._parseTPSResultsPage($);
-                
-                if (pageCandidates.length === 0) {
-                    hasMorePages = false;
-                } else {
-                    console.log(`[TPS] Found ${pageCandidates.length} candidates on page ${currentPage}`);
-                    allCandidates = allCandidates.concat(pageCandidates);
-                }
-                
-                // Check for pagination
-                const hasNextPage = $('.pagination').find('a:contains("Next")').length > 0 ||
-                                   $('a[aria-label="next"]').length > 0;
-                if (!hasNextPage) {
-                    hasMorePages = false;
-                }
-                
-                currentPage++;
-                
-                if (hasMorePages) {
-                    await this.sleep(RATE_LIMIT_MS);
-                }
-                
-            } catch (error) {
-                console.error(`[TPS] Error on page ${currentPage}:`, error.message);
+            const $ = cheerio.load(response.data);
+            const pageCandidates = this._parseTPSResultsPage($);
+            
+            if (pageCandidates.length === 0) {
                 hasMorePages = false;
+            } else {
+                allCandidates = allCandidates.concat(pageCandidates);
+                const hasNextPage = $('.pagination').find('a:contains("Next")').length > 0;
+                if (!hasNextPage) hasMorePages = false;
             }
+            currentPage++;
+            if (hasMorePages) await this.sleep(500);
         }
-        
-        console.log(`[TPS] Total candidates: ${allCandidates.length}`);
-        
         return allCandidates;
     }
 
