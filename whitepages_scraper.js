@@ -134,7 +134,37 @@ async function scrapeWhitePagesProfile(url) {
         
         // Wait for page content
         await page.waitForSelector('h1', { timeout: 15000 });
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 2000));
+
+        // Dismiss any popups (cookie consent, etc.)
+        try {
+            const continueBtn = await page.$('button:has-text("Continue to Results")');
+            if (continueBtn) {
+                console.log('[WhitePages] Dismissing popup...');
+                await continueBtn.click();
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        } catch (e) {}
+
+        // Check if this is a search results page (multiple people)
+        const isSearchResults = await page.evaluate(() => 
+            document.body.innerText.includes('person found') || 
+            document.body.innerText.includes('people found')
+        );
+
+        if (isSearchResults) {
+            console.log('[WhitePages] Search results page - clicking first result...');
+            // Click the first "View Full Report" or profile link
+            try {
+                const firstResult = await page.$('a[href*="/name/"][href*="?"]:not([href*="login"])');
+                if (firstResult) {
+                    await firstResult.click();
+                    await new Promise(r => setTimeout(r, 4000));
+                }
+            } catch (e) {
+                console.log('[WhitePages] Could not click profile link');
+            }
+        }
 
         // Try to click "See All Phones" to expand the phone list
         try {
@@ -215,11 +245,13 @@ module.exports = {
     buildWhitePagesUrl
 };
 
-// Helper to build WhitePages profile URL from name and location
+// Helper to build WhitePages search URL from name and location
 function buildWhitePagesUrl(firstName, lastName, city, state) {
-    const nameSlug = `${firstName}-${lastName}`.replace(/\s+/g, '-');
-    const locationSlug = `${city}-${state}`.replace(/\s+/g, '-');
-    return `https://www.whitepages.com/name/${nameSlug}/${locationSlug}`;
+    // Use search format which is more flexible than direct profile URLs
+    const name = `${firstName} ${lastName}`.trim();
+    const location = state || 'WA';
+    // WhitePages search URL - this will show all matches and we can pick the best
+    return `https://www.whitepages.com/name/${firstName}-${lastName}/${location}`;
 }
 
 // CLI Interface - only run if called directly
