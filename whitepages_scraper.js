@@ -104,6 +104,32 @@ async function scrapeWhitePagesProfile(url) {
             // Reload to apply cookies
             console.log('[WhitePages] Reloading with cookies...');
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+            
+            // Check again
+            await new Promise(r => setTimeout(r, 2000));
+            content = await page.content();
+            const stillNotAuth = !content.includes('Sign Out') && !content.includes('My Account');
+            
+            // If still not authenticated, try logging in with credentials
+            if (stillNotAuth && process.env.WHITEPAGES_EMAIL && process.env.WHITEPAGES_PASSWORD) {
+                console.log('[WhitePages] Cookies expired, attempting auto-login...');
+                await browser.close();
+                
+                // Login first
+                const loginSuccess = await loginToWhitePages(
+                    process.env.WHITEPAGES_EMAIL,
+                    process.env.WHITEPAGES_PASSWORD
+                );
+                
+                if (loginSuccess) {
+                    console.log('[WhitePages] Re-attempting scrape after login...');
+                    // Recursive call to retry scrape after login
+                    return scrapeWhitePagesProfile(url);
+                } else {
+                    console.log('❌ Auto-login failed. Please check credentials in .env');
+                    return null;
+                }
+            }
         }
         
         // Wait for page content
