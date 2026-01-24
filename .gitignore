@@ -1,0 +1,6 @@
+node_modules/
+.env
+.DS_Store
+*.csv
+*.log
+debug_search_dump.html
