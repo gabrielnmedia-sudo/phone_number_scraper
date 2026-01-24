@@ -57,5 +57,5 @@ async function inspectProfile(url) {
 }
 
 // Test with a profile that should have phones
-const testUrl = 'https://radaris.com/~Elspeth-Reff/1439006431';
+const testUrl = process.argv[2] || 'https://radaris.com/~Elspeth-Reff/1439006431';
 inspectProfile(testUrl);

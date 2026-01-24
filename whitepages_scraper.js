@@ -208,37 +208,53 @@ async function scrapeWhitePagesProfile(url) {
     }
 }
 
-// CLI Interface
-const args = process.argv.slice(2);
+// Export for use as module
+module.exports = {
+    scrapeWhitePagesProfile,
+    loginToWhitePages,
+    buildWhitePagesUrl
+};
 
-if (args[0] === 'login') {
-    const email = args[1] || process.env.WHITEPAGES_EMAIL;
-    const password = args[2] || process.env.WHITEPAGES_PASSWORD;
-    
-    if (!email || !password) {
-        console.log('Usage: node whitepages_scraper.js login <email> <password>');
-        console.log('Or set WHITEPAGES_EMAIL and WHITEPAGES_PASSWORD in .env');
-        process.exit(1);
+// Helper to build WhitePages profile URL from name and location
+function buildWhitePagesUrl(firstName, lastName, city, state) {
+    const nameSlug = `${firstName}-${lastName}`.replace(/\s+/g, '-');
+    const locationSlug = `${city}-${state}`.replace(/\s+/g, '-');
+    return `https://www.whitepages.com/name/${nameSlug}/${locationSlug}`;
+}
+
+// CLI Interface - only run if called directly
+if (require.main === module) {
+    const args = process.argv.slice(2);
+
+    if (args[0] === 'login') {
+        const email = args[1] || process.env.WHITEPAGES_EMAIL;
+        const password = args[2] || process.env.WHITEPAGES_PASSWORD;
+        
+        if (!email || !password) {
+            console.log('Usage: node whitepages_scraper.js login <email> <password>');
+            console.log('Or set WHITEPAGES_EMAIL and WHITEPAGES_PASSWORD in .env');
+            process.exit(1);
+        }
+        
+        loginToWhitePages(email, password);
+        
+    } else if (args[0] === 'scrape' || args[0]) {
+        const url = args[0] === 'scrape' ? args[1] : args[0];
+        
+        if (!url || !url.includes('whitepages.com')) {
+            console.log('Usage: node whitepages_scraper.js scrape <whitepages-url>');
+            console.log('Or: node whitepages_scraper.js <whitepages-url>');
+            process.exit(1);
+        }
+        
+        scrapeWhitePagesProfile(url);
+        
+    } else {
+        console.log('WhitePages Scraper via BrightData Scraping Browser');
+        console.log('');
+        console.log('Commands:');
+        console.log('  login <email> <password>  - Login to WhitePages (do this once)');
+        console.log('  scrape <url>              - Scrape a WhitePages profile');
+        console.log('  <url>                     - Same as scrape');
     }
-    
-    loginToWhitePages(email, password);
-    
-} else if (args[0] === 'scrape' || args[0]) {
-    const url = args[0] === 'scrape' ? args[1] : args[0];
-    
-    if (!url || !url.includes('whitepages.com')) {
-        console.log('Usage: node whitepages_scraper.js scrape <whitepages-url>');
-        console.log('Or: node whitepages_scraper.js <whitepages-url>');
-        process.exit(1);
-    }
-    
-    scrapeWhitePagesProfile(url);
-    
-} else {
-    console.log('WhitePages Scraper via BrightData Scraping Browser');
-    console.log('');
-    console.log('Commands:');
-    console.log('  login <email> <password>  - Login to WhitePages (do this once)');
-    console.log('  scrape <url>              - Scrape a WhitePages profile');
-    console.log('  <url>                     - Same as scrape');
 }

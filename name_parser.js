@@ -139,13 +139,25 @@ function cleanName(name) {
 function extractPRs(prField) {
     if (!prField) return [];
     
-    // Common separators: comma, &, "and", slash
-    const names = prField
-        .split(/[,&/]|\s+and\s+/i)
+    // Common separators: comma, &, "and", slash, semicolon
+    const rawNames = prField
+        .split(/[,&/;]|\s+and\s+/i)
         .map(n => cleanName(n))
-        .filter(n => n && n.length > 2);
+        .filter(n => n && n.length > 2 && !/^(PR|Owner|Personal Representative)$/i.test(n));
     
-    return names;
+    // Add additional targets for hyphenated names
+    const names = [];
+    rawNames.forEach(n => {
+        names.push(n);
+        if (n.includes('-')) {
+            const parts = n.split('-').map(p => p.trim());
+            parts.forEach(p => {
+                if (p.length > 3) names.push(p);
+            });
+        }
+    });
+
+    return [...new Set(names)]; // Unique names only
 }
 
 /**

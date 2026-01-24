@@ -5,6 +5,7 @@ const RadarisScraper = require('./radaris_scraper');
 const SearchPeopleFreeScraper = require('./searchpeoplefree_scraper');
 const EnhancedScraper = require('./enhanced_scraper');
 const GoogleHelper = require('./google_helper');
+const WhitePagesScraper = require('./whitepages_scraper');
 const { matchProfile } = require('./matcher');
 require('dotenv').config();
 
@@ -96,30 +97,28 @@ async function tieredSearchPR(prName, deceasedName, city, state, rowIndex) {
     masterPool = tier1Results.flat();
 
     // OPTIMIZATION: Check for "Perfect Match" in Tier 1 to skip Tier 2
-    if (masterPool.length > 0) {
-        const hasPerfect = masterPool.some(c => 
-            c.fullName.toLowerCase() === prName.toLowerCase() && 
-            c.location && c.location.toLowerCase().includes(city.toLowerCase())
-        );
-        
-        if (hasPerfect) {
-            console.log(`[Row ${rowIndex}] ⚡ Perfect Tier 1 match found. Speed-bypassing Tier 2.`);
-        } else {
-            // --- TIER 2: BROADEN ONLY IF NEEDED ---
-            const googleQuery = `"${prName}" "${deceasedName}" WA`;
-            const [cUS, cTPS, googleItems] = await Promise.all([
-               radaris.search(prName, null, "US", { maxPages: 1 }).catch(e => []),
-               enhanced.searchTPSWithPagination(prName, city, state, { maxPages: 1 }).catch(e => []),
-               google.searchBroad(googleQuery).catch(e => [])
-           ]);
+    const hasPerfect = masterPool.length > 0 && masterPool.some(c => 
+        c.fullName.toLowerCase() === prName.toLowerCase() && 
+        c.location && c.location.toLowerCase().includes(city.toLowerCase())
+    );
+    
+    if (hasPerfect) {
+        console.log(`[Row ${rowIndex}] ⚡ Perfect Tier 1 match found. Speed-bypassing Tier 2.`);
+    } else {
+        // --- TIER 2: BROADEN (runs even if Tier 1 is empty) ---
+        const googleQuery = `"${prName}" "${deceasedName}" WA`;
+        const [cUS, cTPS, googleItems] = await Promise.all([
+           radaris.search(prName, null, "US", { maxPages: 1 }).catch(e => []),
+           enhanced.searchTPSWithPagination(prName, city, state, { maxPages: 1 }).catch(e => []),
+           google.searchBroad(googleQuery).catch(e => [])
+       ]);
 
-           const googleCandidates = googleItems.map(item => {
-               const snippetPhones = (item.snippet.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g) || []);
-               return { fullName: item.title.split(' | ')[0].split(' - ')[0], phones: snippetPhones, detailLink: item.link, source: 'Google', snippet: item.snippet, relatives: [] };
-           }).filter(c => c.phones.length > 0 || c.detailLink.includes('radaris.com'));
+       const googleCandidates = googleItems.map(item => {
+           const snippetPhones = (item.snippet.match(/\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g) || []);
+           return { fullName: item.title.split(' | ')[0].split(' - ')[0], phones: snippetPhones, detailLink: item.link, source: 'Google', snippet: item.snippet, relatives: [] };
+       }).filter(c => c.phones.length > 0 || c.detailLink.includes('radaris.com'));
 
-           masterPool = [...masterPool, ...cUS, ...cTPS, ...googleCandidates];
-        }
+       masterPool = [...masterPool, ...cUS, ...cTPS, ...googleCandidates];
     }
 
     if (masterPool.length === 0) return result;
@@ -288,6 +287,33 @@ async function processRow(row, rowIndex) {
                         prResults[0] = { name: best.fullName, phone: best.phones[0], allPhones: best.phones.join(' | '), source: 'Address Pivot', confidence: bestAddrMatch.confidence, reasoning: `Found at target address: ${bestAddrMatch.reasoning}`, found: true };
                     }
                 }
+            }
+        }
+
+        // Tier 4: WhitePages Fallback (if all else fails)
+        if (prResults.every(res => !res.found) && prList[0]) {
+            console.log(`[Row ${rowIndex}] 📞 Tier 4: WhitePages Fallback...`);
+            try {
+                const nameParts = prList[0].split(/\s+/);
+                const firstName = nameParts[0];
+                const lastName = nameParts[nameParts.length - 1];
+                const wpUrl = WhitePagesScraper.buildWhitePagesUrl(firstName, lastName, city || 'WA', state || 'WA');
+                
+                const wpResult = await WhitePagesScraper.scrapeWhitePagesProfile(wpUrl);
+                if (wpResult && wpResult.phones && wpResult.phones.length > 0) {
+                    prResults[0] = {
+                        name: wpResult.fullName || prList[0],
+                        phone: wpResult.phones[0],
+                        allPhones: wpResult.phones.join(' | '),
+                        source: 'WhitePages',
+                        confidence: 75,
+                        reasoning: `WhitePages Tier 4 fallback - found ${wpResult.phones.length} phone(s)`,
+                        found: true
+                    };
+                    console.log(`[Row ${rowIndex}] ✅ WhitePages found: ${wpResult.phones[0]}`);
+                }
+            } catch (e) {
+                console.log(`[Row ${rowIndex}] ⚠️ WhitePages error: ${e.message}`);
             }
         }
     }
