@@ -8,10 +8,28 @@ require('dotenv').config();
 
 const SBR_WS_ENDPOINT = 'wss://brd-customer-hl_ee9970d7-zone-scraping_browser2:wftjnv7qkx3v@brd.superproxy.io:9222';
 
+// Throttling: Minimum 30 seconds between WhitePages requests to avoid rate limiting
+let lastRequestTime = 0;
+const THROTTLE_MS = 30000; // 30 seconds
+
+async function throttle() {
+    const now = Date.now();
+    const elapsed = now - lastRequestTime;
+    if (lastRequestTime > 0 && elapsed < THROTTLE_MS) {
+        const waitTime = THROTTLE_MS - elapsed;
+        console.log(`[WP Throttle] Waiting ${Math.round(waitTime/1000)}s to avoid rate limits...`);
+        await new Promise(r => setTimeout(r, waitTime));
+    }
+    lastRequestTime = Date.now();
+}
+
 /**
  * Search WhitePages and scrape the first matching profile
  */
 async function searchAndScrapeWhitePages(firstName, lastName, state = 'WA') {
+    // Apply throttling before making request
+    await throttle();
+    
     console.log(`[WP Search] Searching for ${firstName} ${lastName} in ${state}...`);
     
     const browser = await puppeteer.connect({
