@@ -12,7 +12,8 @@ require('dotenv').config();
 const CONFIG = {
     INPUT_FILE: './Fresh_Test_Run.csv',
     OUTPUT_FILE: './Data_Tracking_Processed_Universal_V11.csv',
-    CONCURRENT_ROWS: 20, // Mach 1 Speed for V11.6
+    CONCURRENT_ROWS: 20, // Mach 1 Speed for V11.7
+    MAX_DEEP_FETCHES: 2, // V11.7 Cost-Cutter: Limit expensive profile fetches
     CONFIDENCE_THRESHOLD_PERFECT: 85, 
     CONFIDENCE_THRESHOLD_STRONG: 70, 
     CONFIDENCE_THRESHOLD_MEDIUM: 40, 
@@ -22,6 +23,21 @@ const radaris = new RadarisScraper();
 const spf = new SearchPeopleFreeScraper();
 const enhanced = new EnhancedScraper();
 const google = new GoogleHelper();
+
+// V11.7 Cost-Cutter: In-memory profile cache to avoid duplicate fetches
+const profileCache = new Map();
+
+async function cachedProfileFetch(url, source) {
+    if (profileCache.has(url)) return profileCache.get(url);
+    let profile = null;
+    try {
+        if (source === 'Radaris') profile = await radaris.getProfile(url);
+        else if (source === 'CBC') profile = await enhanced.getDetailsCBC(url);
+        else if (source === 'TPS') profile = await enhanced.getDetailsTPS(url);
+    } catch (e) {}
+    profileCache.set(url, profile);
+    return profile;
+}
 
 /**
  * Improved address parser
@@ -56,6 +72,14 @@ async function tieredSearchPR(prName, deceasedName, city, state, rowIndex) {
     const parts = prName.split(/\s+/);
     if (parts.length > 2) {
         variations.push(`${parts[0]} ${parts[parts.length-1]}`); // First Last
+    }
+    // V11.7: Handle hyphenated surnames (e.g., "ERIC BLADINE-GLOMBECKI" -> "ERIC GLOMBECKI", "ERIC BLADINE")
+    const lastName = parts[parts.length - 1];
+    if (lastName.includes('-')) {
+        const hyphenParts = lastName.split('-');
+        hyphenParts.forEach(hp => {
+            if (hp.length > 2) variations.push(`${parts[0]} ${hp}`);
+        });
     }
 
     let masterPool = [];
@@ -143,7 +167,7 @@ async function tieredSearchPR(prName, deceasedName, city, state, rowIndex) {
 }
 
 /**
- * Apex-Merger: Parallel Deep Extraction for 100% Retention
+ * Apex-Merger: Parallel Deep Extraction for 100% Retention (V11.7 Cost-Optimized)
  */
 async function extractMergedPhones(best, pool, rowIndex, targetName) {
     let phones = new Set((best.visiblePhones || best.phones || []).filter(p => p && p.length >= 10));
@@ -155,25 +179,22 @@ async function extractMergedPhones(best, pool, rowIndex, targetName) {
     const bestFirst = bestParts[0];
     const bestLast = bestParts[bestParts.length - 1];
 
+    // V11.7: Prioritize the best match first, then similar profiles
     const group = pool.filter(c => {
         const cName = c.fullName.toLowerCase();
-        // Loose Match: Must have First and Last
         const matchesTarget = cName.includes(targetFirst) && cName.includes(targetLast);
         const matchesBest = cName.includes(bestFirst) && cName.includes(bestLast);
         const isLocMatch = c.location && best.location && (c.location.includes(best.location) || best.location.includes(c.location));
-        
         return (matchesTarget || matchesBest || c.detailLink === best.detailLink) && (isLocMatch || !best.location || c.age === best.age);
     });
 
-    const deepPromises = group.map(async (cand) => {
+    // V11.7 Cost-Cutter: Only deep-fetch top N profiles (prioritize best match + unique sources)
+    const toFetch = [best, ...group.filter(c => c.detailLink !== best.detailLink)].slice(0, CONFIG.MAX_DEEP_FETCHES);
+
+    const deepPromises = toFetch.map(async (cand) => {
         if (!cand.detailLink || cand.source === 'Google') return cand.phones || [];
-        try {
-            let profile;
-            if (cand.source === 'Radaris') profile = await radaris.getProfile(cand.detailLink);
-            else if (cand.source === 'CBC') profile = await enhanced.getDetailsCBC(cand.detailLink);
-            else if (cand.source === 'TPS') profile = await enhanced.getDetailsTPS(cand.detailLink);
-            return profile ? (profile.allPhones || profile.phones || []) : [];
-        } catch (e) { return []; }
+        const profile = await cachedProfileFetch(cand.detailLink, cand.source);
+        return profile ? (profile.allPhones || profile.phones || []) : [];
     });
 
     const results = await Promise.all(deepPromises);
