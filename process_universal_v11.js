@@ -5,8 +5,7 @@ const RadarisScraper = require('./radaris_scraper');
 const SearchPeopleFreeScraper = require('./searchpeoplefree_scraper');
 const EnhancedScraper = require('./enhanced_scraper');
 const GoogleHelper = require('./google_helper');
-const WhitePagesScraper = require('./whitepages_scraper');
-const { searchAndScrapeWhitePages } = require('./whitepages_search');
+const { twoPhaseWhitePages } = require('./whitepages_two_phase');
 const { matchProfile } = require('./matcher');
 require('dotenv').config();
 
@@ -299,8 +298,8 @@ async function processRow(row, rowIndex) {
                 const firstName = nameParts[0];
                 const lastName = nameParts[nameParts.length - 1];
                 
-                // Use the search and scrape function which handles profile discovery
-                const wpResult = await searchAndScrapeWhitePages(firstName, lastName, state || 'WA');
+                // Use the two-phase approach which handles profile discovery
+                const wpResult = await twoPhaseWhitePages(firstName, lastName, state || 'WA');
                 if (wpResult && wpResult.phones && wpResult.phones.length > 0) {
                     prResults[0] = {
                         name: wpResult.fullName || prList[0],
