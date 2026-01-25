@@ -155,15 +155,53 @@ async function scrapeProfile(profileUrl) {
 }
 
 /**
- * Full two-phase search and scrape
+ * Retry wrapper with exponential backoff
+ */
+async function withRetry(fn, maxRetries = 3, baseDelay = 5000) {
+    let lastError;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const result = await fn();
+            return result;
+        } catch (error) {
+            lastError = error;
+            console.log(`[WP Retry] Attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+            if (attempt < maxRetries) {
+                const delay = baseDelay * Math.pow(2, attempt - 1);
+                console.log(`[WP Retry] Waiting ${delay/1000}s before retry...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    }
+    console.error(`[WP Retry] All ${maxRetries} attempts failed`);
+    return null;
+}
+
+/**
+ * Full two-phase search and scrape with retry logic
  */
 async function twoPhaseWhitePages(firstName, lastName, state = 'WA') {
-    // Phase 1: Find profile URL
-    const profileUrl = await findProfileUrl(firstName, lastName, state);
-    if (!profileUrl) return null;
+    // Phase 1: Find profile URL (with retry)
+    const profileUrl = await withRetry(async () => {
+        const url = await findProfileUrl(firstName, lastName, state);
+        if (!url) throw new Error('No profile URL found');
+        return url;
+    }, 2, 5000);
     
-    // Phase 2: Scrape profile
-    const result = await scrapeProfile(profileUrl);
+    if (!profileUrl) {
+        console.log(`[WP] Failed to find profile for ${firstName} ${lastName}`);
+        return null;
+    }
+    
+    // Phase 2: Scrape profile (with retry)
+    const result = await withRetry(async () => {
+        const data = await scrapeProfile(profileUrl);
+        if (!data || !data.phones || data.phones.length === 0) {
+            throw new Error('No phones found in profile');
+        }
+        return data;
+    }, 2, 5000);
+    
     return result;
 }
 

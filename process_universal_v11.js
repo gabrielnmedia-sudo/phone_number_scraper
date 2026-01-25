@@ -293,27 +293,36 @@ async function processRow(row, rowIndex) {
         // Tier 4: WhitePages Fallback (if all else fails)
         if (prResults.every(res => !res.found) && prList[0]) {
             console.log(`[Row ${rowIndex}] 📞 Tier 4: WhitePages Fallback...`);
-            try {
-                const nameParts = prList[0].split(/\s+/);
-                const firstName = nameParts[0];
-                const lastName = nameParts[nameParts.length - 1];
-                
-                // Use the two-phase approach which handles profile discovery
-                const wpResult = await twoPhaseWhitePages(firstName, lastName, state || 'WA');
-                if (wpResult && wpResult.phones && wpResult.phones.length > 0) {
-                    prResults[0] = {
-                        name: wpResult.fullName || prList[0],
-                        phone: wpResult.phones[0],
-                        allPhones: wpResult.phones.join(' | '),
-                        source: 'WhitePages',
-                        confidence: 75,
-                        reasoning: `WhitePages Tier 4 fallback - found ${wpResult.phones.length} phone(s)`,
-                        found: true
-                    };
-                    console.log(`[Row ${rowIndex}] ✅ WhitePages found: ${wpResult.phones[0]}`);
+            const nameParts = prList[0].split(/\s+/);
+            const firstName = nameParts[0];
+            const lastName = nameParts[nameParts.length - 1];
+            
+            // Retry wrapper for robustness
+            for (let attempt = 1; attempt <= 2; attempt++) {
+                try {
+                    const wpResult = await twoPhaseWhitePages(firstName, lastName, state || 'WA');
+                    if (wpResult && wpResult.phones && wpResult.phones.length > 0) {
+                        prResults[0] = {
+                            name: wpResult.fullName || prList[0],
+                            phone: wpResult.phones[0],
+                            allPhones: wpResult.phones.join(' | '),
+                            source: 'WhitePages',
+                            confidence: 75,
+                            reasoning: `WhitePages Tier 4 fallback - found ${wpResult.phones.length} phone(s)`,
+                            found: true
+                        };
+                        console.log(`[Row ${rowIndex}] ✅ WhitePages found: ${wpResult.phones[0]}`);
+                        break; // Success, exit retry loop
+                    } else if (attempt < 2) {
+                        console.log(`[Row ${rowIndex}] ⏳ WhitePages attempt ${attempt} returned no phones, retrying...`);
+                        await new Promise(r => setTimeout(r, 5000));
+                    }
+                } catch (e) {
+                    console.log(`[Row ${rowIndex}] ⚠️ WhitePages attempt ${attempt} error: ${e.message}`);
+                    if (attempt < 2) {
+                        await new Promise(r => setTimeout(r, 5000));
+                    }
                 }
-            } catch (e) {
-                console.log(`[Row ${rowIndex}] ⚠️ WhitePages error: ${e.message}`);
             }
         }
     }
