@@ -285,6 +285,8 @@ async function processRow(row, rowIndex) {
                     const best = addrCandidates[bestAddrMatch.bestMatchIndex];
                     if (best.phones && best.phones.length > 0) {
                         prResults[0] = { name: best.fullName, phone: best.phones[0], allPhones: best.phones.join(' | '), source: 'Address Pivot', confidence: bestAddrMatch.confidence, reasoning: `Found at target address: ${bestAddrMatch.reasoning}`, found: true };
+                    }
+                }
             }
         }
 
