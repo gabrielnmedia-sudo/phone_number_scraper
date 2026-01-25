@@ -84,6 +84,39 @@ async function tieredSearchPR(prName, deceasedName, city, state, rowIndex) {
     }
 
     let masterPool = [];
+    let isAttorney = false; // V11.13 Attorney Flag
+
+    // --- TIER 0.5: REVERSE HOUSEHOLD LINKAGE (V11.13) ---
+    if (deceasedName && deceasedName !== 'Unknown') {
+        console.log(`[Row ${rowIndex}] 🔄 V11.13 Reverse Linkage: Searching for ${deceasedName}...`);
+        try {
+            const deceasedResults = await radaris.search(deceasedName, null, state, { maxPages: 1 }).catch(e => []);
+            for (const deceased of deceasedResults) {
+                if (deceased.relatives && deceased.relatives.length > 0) {
+                    const prNameLower = prName.toLowerCase();
+                    const prParts = prName.toLowerCase().split(/\s+/);
+                    const prFirst = prParts[0];
+                    const prLast = prParts[prParts.length - 1];
+                    
+                    const linkedPR = deceased.relatives.find(rel => {
+                        const relStr = typeof rel === 'string' ? rel : (rel.name || '');
+                        const relLower = relStr.toLowerCase();
+                        return relLower.includes(prFirst) && relLower.includes(prLast);
+                    });
+                    
+                    if (linkedPR) {
+                        console.log(`[Row ${rowIndex}] ✅ V11.13 Found PR in deceased's relatives!`);
+                        // Now search for the linked PR specifically
+                        const linkedName = typeof linkedPR === 'string' ? linkedPR : linkedPR.name;
+                        const prResults = await radaris.search(linkedName, null, state, { maxPages: 1 }).catch(e => []);
+                        masterPool = [...masterPool, ...prResults];
+                    }
+                }
+            }
+        } catch (e) {
+            console.log(`[Row ${rowIndex}] ⚠️ Reverse Linkage error: ${e.message}`);
+        }
+    }
 
     // --- TIER 1: HIGH CONCURRENCY POOLING ---
     console.log(`[Row ${rowIndex}] 🏎️  Apex Pooling: ${prName}...`);
@@ -129,12 +162,16 @@ async function tieredSearchPR(prName, deceasedName, city, state, rowIndex) {
 
     if (match && match.bestMatchIndex !== -1 && match.confidence >= CONFIG.CONFIDENCE_THRESHOLD_MEDIUM) {
         let best = masterPool[match.bestMatchIndex];
+        isAttorney = match.isAttorney || false;
+        
+        // V11.13: Prefix name with [ATTORNEY] if detected
+        const displayName = isAttorney ? `[ATTORNEY] ${best.fullName}` : best.fullName;
         
         // --- APEX MERGER (Parallel Deep Extract) ---
         let phones = await extractMergedPhones(best, masterPool, rowIndex, prName);
         
         if (phones.length > 0) {
-            return { ...result, name: best.fullName, phone: phones[0], allPhones: phones.join(' | '), source: `${best.source} (Apex V11.5)`, confidence: match.confidence, reasoning: match.reasoning, found: true };
+            return { ...result, name: displayName, phone: phones[0], allPhones: phones.join(' | '), source: `${best.source} (Apex V11.5)`, confidence: match.confidence, reasoning: match.reasoning, found: true, isAttorney };
         }
 
         // --- RECURSIVE RELAY FALLBACK ---

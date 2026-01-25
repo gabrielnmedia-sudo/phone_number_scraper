@@ -173,12 +173,33 @@ class RadarisScraper {
                         });
                     }
 
+                    // Relatives extraction
+                    const relatives = [];
+                    $el.find('.nowrap').each((j, rel) => {
+                        const relName = $(rel).text().trim().replace(/,\s*\d+$/, ''); // Remove age
+                        if (relName && !relatives.includes(relName)) relatives.push(relName);
+                    });
+
+                    // JSON-LD fallback for relatives
+                    const jsonLd = $('script[type="application/ld+json"]').first().html();
+                    if (jsonLd) {
+                        try {
+                            const data = JSON.parse(jsonLd);
+                            if (data.relatedTo) {
+                                data.relatedTo.forEach(r => {
+                                    if (r.name && !relatives.includes(r.name)) relatives.push(r.name);
+                                });
+                            }
+                        } catch (e) {}
+                    }
+
                     if (name && detailLink && name.length > 3) {
                         pageCandidates.push({
                             fullName: name,
                             age: age || 'Unknown',
                             location: location || 'Unknown',
                             detailLink: detailLink.startsWith('http') ? detailLink : `https://radaris.com${detailLink}`,
+                            relatives: relatives,
                             source: 'Radaris'
                         });
                     }

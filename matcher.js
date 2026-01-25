@@ -31,6 +31,7 @@ async function matchProfile(deceasedName, deceasedLocation, prName, candidates) 
     5. GEOGRAPHIC PROXIMITY: If the candidate has the correct name and lives in "${deceasedLocation.split(',')[0]}", this is a STRONG match (75-85%) even without a recorded relative link. Public records often miss relationship data.
     6. RELATIONAL LINKAGE: If a candidate has the correct name but NO evidence of a link AND is in a different state, then cap confidence at 60%. If they are local, prioritize the name/location match.
     7. PHONE PREFERENCE: Favor candidates that have phone numbers listed in the scraped data. If multiple candidates are otherwise equal, pick the one with the most phone numbers.
+    8. ATTORNEY DETECTION: If ANY candidate profile or snippet contains keywords like "Attorney", "Law Firm", "Esquire", "JD", "Lawyer", "Law Office", or "Counsel", mark them as a potential PROFESSIONAL PR. This should be returned in an "isAttorney": true field.
 
     Candidates:
     ${JSON.stringify(candidates, null, 2)}
@@ -38,8 +39,9 @@ async function matchProfile(deceasedName, deceasedLocation, prName, candidates) 
     Return a JSON object with:
     - "bestMatchIndex": The index of the best matching candidate (0-based). If no candidates show any plausible connection to the name or family, return -1.
     - "confidence": Score from 0 to 100.
-    - "reasoning": Brief explanation. Mention if it's a family connection, shared name, or geographic proximity.
+    - "reasoning": Brief explanation. Mention if it's a family connection, shared name, or geographic proximity. If an attorney is detected, add "Caution: Professional PR detected." to the end of reasoning.
     - "matchType": "VERIFIED", "HIGHLY_PROBABLE", "PLAUSIBLE_GUESS", or "NONE".
+    - "isAttorney": true if the matched candidate appears to be an attorney/professional, false otherwise.
 
     Return ONLY raw JSON, no markdown formatting.
     `;

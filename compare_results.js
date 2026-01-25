@@ -1,115 +1,118 @@
 const fs = require('fs');
 const csv = require('csv-parser');
 
-const annotatedFile = './test_run_results_v2 - test_run_results_v2 (1).csv';
-const resultsFile = './Data_Tracking_Processed_Universal_V11.csv';
+const BENCHMARK_FILE = 'test_run_results_v2 - test_run_results_v2 (1).csv';
+const NEW_FILE = 'Data_Tracking_Processed_Universal_V11.csv';
 
-async function readCSV(path) {
+async function loadCsv(filePath) {
+    const rows = [];
     return new Promise((resolve) => {
-        const results = [];
-        if (!fs.existsSync(path)) return resolve([]);
-        fs.createReadStream(path)
+        fs.createReadStream(filePath)
             .pipe(csv())
-            .on('data', (data) => results.push(data))
-            .on('end', () => resolve(results));
+            .on('data', (data) => {
+                if (data['Owner Name'] && data['Owner Name'].trim() !== '') {
+                    rows.push(data);
+                }
+            })
+            .on('end', () => resolve(rows));
     });
 }
 
-function normalizePhone(p) {
+function cleanPhone(p) {
     if (!p) return '';
     return p.replace(/\D/g, '').slice(-10);
 }
 
-async function compare() {
-    const annotatedRows = await readCSV(annotatedFile);
-    const resultRows = await readCSV(resultsFile);
+async function runComparison() {
+    console.log('--- Skip Tracing Audit: V11.12 vs Benchmark ---');
+    
+    const benchmarkRows = await loadCsv(BENCHMARK_FILE);
+    const newRows = await loadCsv(NEW_FILE);
 
-    console.log(`📂 Loaded ${annotatedRows.length} annotated rows and ${resultRows.length} result rows.\n`);
+    console.log(`Loaded ${benchmarkRows.length} benchmark rows.`);
+    console.log(`Loaded ${newRows.length} new result rows.`);
 
-    const resultStore = new Map();
-    resultRows.forEach(row => {
-        const key = `${row['Owner Name']}|${row['Property Address']}`.toLowerCase().trim();
-        resultStore.set(key, row);
+    const newMap = new Map();
+    newRows.forEach(row => {
+        const key = row['Owner Name'].trim().toLowerCase();
+        newMap.set(key, row);
     });
 
-    const report = {
-        stillCorrect: 0,
-        nowDifferent: 0,
-        newFoundForIncorrect: 0,
-        newFoundForNoResult: 0,
-        details: []
+    let stats = {
+        correct_total: 0,
+        correct_retained: 0,
+        correct_lost: 0,
+        correct_changed: 0,
+        incorrect_total: 0,
+        incorrect_fixed_new_phone: 0,
+        incorrect_still_same: 0,
+        incorrect_now_empty: 0,
+        newly_found: 0,
+        total_leads_compared: 0
     };
 
-    annotatedRows.forEach(aRow => {
-        const ownerName = aRow['Owner Name'];
-        const address = aRow['Property Address'];
-        if (!ownerName || ownerName === '') return;
+    benchmarkRows.forEach(bench => {
+        const ownerName = bench['Owner Name'].trim();
+        const key = ownerName.toLowerCase();
+        const status = bench['Status'];
+        const oldPhone = bench['PR Phone_FOUND'];
+        const cleanOld = cleanPhone(oldPhone);
 
-        const key = `${ownerName}|${address}`.toLowerCase().trim();
-        const rRow = resultStore.get(key);
-        const status = aRow['Status'];
+        const newRow = newMap.get(key);
+        if (!newRow) return;
 
-        if (!rRow) return;
-
-        const oldPhone = normalizePhone(aRow['PR Phone_FOUND']);
-        const newPhone = normalizePhone(rRow['PR 1 Phone']);
+        stats.total_leads_compared++;
+        const newPhone = newRow['PR 1 Phone'];
+        const cleanNew = cleanPhone(newPhone);
 
         if (status === 'Correct') {
-            if (oldPhone === newPhone) {
-                report.stillCorrect++;
+            stats.correct_total++;
+            if (!cleanNew) {
+                stats.correct_lost++;
+                console.log(`[-] LOST CORRECT: ${ownerName} (Old: ${oldPhone}, New: NONE)`);
+            } else if (cleanNew === cleanOld) {
+                stats.correct_retained++;
             } else {
-                report.nowDifferent++;
-                report.details.push({
-                    ownerName,
-                    type: 'Correct row changed',
-                    oldPhone: aRow['PR Phone_FOUND'],
-                    newPhone: rRow['PR 1 Phone'],
-                    reason: rRow['PR 1 Match Reasoning']
-                });
+                stats.correct_changed++;
+                console.log(`[!] CHANGED CORRECT: ${ownerName} (Old: ${oldPhone}, New: ${newPhone})`);
             }
         } else if (status === 'Incorrect') {
-            if (newPhone && newPhone !== oldPhone) {
-                report.newFoundForIncorrect++;
-                report.details.push({
-                    ownerName,
-                    type: 'Incorrect row updated',
-                    oldPhone: aRow['PR Phone_FOUND'],
-                    newPhone: rRow['PR 1 Phone'],
-                    reason: rRow['PR 1 Match Reasoning']
-                });
+            stats.incorrect_total++;
+            if (!cleanNew) {
+                stats.incorrect_now_empty++;
+            } else if (cleanNew === cleanOld) {
+                stats.incorrect_still_same++;
+                console.log(`[x] STILL WRONG: ${ownerName} (Phone: ${oldPhone})`);
+            } else {
+                stats.incorrect_fixed_new_phone++;
+                console.log(`[+] FIXED INCORRECT: ${ownerName} (Old: ${oldPhone}, New: ${newPhone})`);
             }
-        } else if (status === 'No result') {
-            if (newPhone) {
-                report.newFoundForNoResult++;
-                report.details.push({
-                    ownerName,
-                    type: 'No Result row found info',
-                    newPhone: rRow['PR 1 Phone'],
-                    reason: rRow['PR 1 Match Reasoning']
-                });
+        } else {
+            // Previously NO status or something else
+            if (cleanNew && !cleanOld) {
+                stats.newly_found++;
+                console.log(`[*] NEWLY FOUND: ${ownerName} (New: ${newPhone})`);
             }
         }
     });
 
-    console.log('=== FINAL AUDIT REPORT (V3) ===');
-    console.log(`✅ STILL CORRECT: ${report.stillCorrect}`);
-    console.log(`⚠️  REJECTED/CHANGED (STRICTER): ${report.nowDifferent}`);
-    console.log(`✨ RECOVERED (PREV INCORRECT): ${report.newFoundForIncorrect}`);
-    console.log(`⭐ RECOVERED (PREV NO RESULT): ${report.newFoundForNoResult}`);
-    console.log('===============================\n');
+    console.log('\n--- SUMMARY ---');
+    console.log(`Total Leads Compared: ${stats.total_leads_compared}`);
+    console.log(`\nCORRECT LEADS (${stats.correct_total}):`);
+    console.log(`  Retained: ${stats.correct_retained} (${Math.round(stats.correct_retained/stats.correct_total*100)}%)`);
+    console.log(`  Lost:     ${stats.correct_lost}`);
+    console.log(`  Changed:  ${stats.correct_changed}`);
+    
+    console.log(`\nINCORRECT LEADS (${stats.incorrect_total}):`);
+    console.log(`  Fixed (New Phone): ${stats.incorrect_fixed_new_phone}`);
+    console.log(`  Still Same:        ${stats.incorrect_still_same}`);
+    console.log(`  Now Empty:         ${stats.incorrect_now_empty}`);
 
-    console.log('--- Regression Analysis (REJECTED/CHANGED) ---');
-    report.details.filter(d => d.type === 'Correct row changed').forEach(d => {
-        console.log(`[REGRESSION] ${d.ownerName}`);
-        console.log(`   Old Phone: ${d.oldPhone}`);
-        console.log(`   New Phone: ${d.newPhone || 'NONE'}`);
-        console.log(`   V3 Reasoning: ${d.reason}\n`);
-    });
-
-    console.log('--- Recovery Details ---');
-    report.details.filter(d => d.type.includes('Incorrect') || d.type.includes('No Result')).forEach(d => {
-        console.log(`[RECOVERED] ${d.ownerName} -> ${d.newPhone}`);
-    });
+    console.log(`\nNEW FINDINGS:`);
+    console.log(`  Newly Found:       ${stats.newly_found}`);
+    
+    const accuracy = ((stats.correct_retained + stats.incorrect_fixed_new_phone) / stats.total_leads_compared * 100).toFixed(1);
+    console.log(`\nInferred Quality Score: ${accuracy}%`);
 }
 
-compare();
+runComparison().catch(console.error);
