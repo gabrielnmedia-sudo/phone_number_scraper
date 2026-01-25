@@ -1,8 +1,8 @@
 {
-  "totalProcessed": 53,
-  "totalFound": 48,
+  "totalProcessed": 55,
+  "totalFound": 52,
   "correctRetained": 26,
-  "incorrectFixed": 7,
+  "incorrectFixed": 11,
   "totalTruthCorrect": 27,
   "totalTruthIncorrect": 17
 }
