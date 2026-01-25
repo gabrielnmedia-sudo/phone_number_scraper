@@ -285,8 +285,41 @@ async function processRow(row, rowIndex) {
                     const best = addrCandidates[bestAddrMatch.bestMatchIndex];
                     if (best.phones && best.phones.length > 0) {
                         prResults[0] = { name: best.fullName, phone: best.phones[0], allPhones: best.phones.join(' | '), source: 'Address Pivot', confidence: bestAddrMatch.confidence, reasoning: `Found at target address: ${bestAddrMatch.reasoning}`, found: true };
+            }
+        }
+
+        // Tier 3.5: WhitePages Verification (for low-confidence matches < 85%)
+        const lowConfidenceMatch = prResults.find(res => res.found && res.confidence < 85);
+        if (lowConfidenceMatch && prList[0]) {
+            console.log(`[Row ${rowIndex}] 🔍 Tier 3.5: WhitePages Verification (${lowConfidenceMatch.confidence}% confidence)...`);
+            try {
+                const nameParts = prList[0].split(/\s+/);
+                const firstName = nameParts[0];
+                const lastName = nameParts[nameParts.length - 1];
+                
+                const wpResult = await twoPhaseWhitePages(firstName, lastName, state || 'WA');
+                if (wpResult && wpResult.phones && wpResult.phones.length > 0) {
+                    const wpPhone = wpResult.phones[0].replace(/\D/g, '');
+                    const currentPhone = lowConfidenceMatch.phone.replace(/\D/g, '');
+                    
+                    if (wpPhone !== currentPhone) {
+                        console.log(`[Row ${rowIndex}] ⚠️ WhitePages found different phone! Replacing ${lowConfidenceMatch.phone} → ${wpResult.phones[0]}`);
+                        const idx = prResults.indexOf(lowConfidenceMatch);
+                        prResults[idx] = {
+                            name: wpResult.fullName || prList[0],
+                            phone: wpResult.phones[0],
+                            allPhones: wpResult.phones.join(' | '),
+                            source: 'WhitePages (Verified)',
+                            confidence: 90,
+                            reasoning: `WhitePages cross-verified - replaced low-confidence Radaris match (${lowConfidenceMatch.confidence}%)`,
+                            found: true
+                        };
+                    } else {
+                        console.log(`[Row ${rowIndex}] ✓ WhitePages confirmed phone ${wpResult.phones[0]}`);
                     }
                 }
+            } catch (e) {
+                console.log(`[Row ${rowIndex}] ⚠️ WhitePages verification error: ${e.message}`);
             }
         }
 
