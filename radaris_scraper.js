@@ -1,30 +1,18 @@
 /**
  * Radaris Scraper Module
- * Uses BrightData Site Unlocker for all requests
+ * Uses ScraperAPI for all requests
  */
 
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { HttpsProxyAgent } = require('https-proxy-agent');
 require('dotenv').config();
+const { globalLimiter } = require('./request_limiter');
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
-const PROXY_URL = `http://${process.env.BRIGHTDATA_USER}:${process.env.BRIGHTDATA_PASS}@${process.env.BRIGHTDATA_HOST}:${process.env.BRIGHTDATA_PORT}`;
-const HTTPS_AGENT = new HttpsProxyAgent(PROXY_URL, { rejectUnauthorized: false });
-
-const HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-};
-
-const TIMEOUT = 10000; // Apex Speed timeout
+const SCRAPERAPI_KEY = process.env.SCRAPERAPI_KEY;
+const TIMEOUT = 60000; // ScraperAPI needs more time
 
 class RadarisScraper {
     constructor() {
-        this.apiKey = process.env.BRIGHTDATA_API_KEY;
-        this.zone = 'web_unlocker1';
         this.client = axios.create({
             timeout: TIMEOUT,
             validateStatus: () => true,
@@ -56,32 +44,26 @@ class RadarisScraper {
     async _makeRequest(targetUrl, retries = 3) {
         for (let i = 0; i < retries; i++) {
             try {
-                const response = await this.client.post('https://api.brightdata.com/request', {
-                    zone: this.zone,
-                    url: targetUrl,
-                    format: 'raw'
-                }, {
-                    headers: {
-                        'Authorization': `Bearer ${this.apiKey}`,
-                        'Content-Type': 'application/json'
-                    }
+                const response = await globalLimiter.run(async () => {
+                    const scraperUrl = `http://api.scraperapi.com?api_key=${SCRAPERAPI_KEY}&url=${encodeURIComponent(targetUrl)}&premium=true&country_code=us`;
+                    return this.client.get(scraperUrl);
                 });
 
                 if (response.status === 200 && response.data && response.data.length > 0) {
                     return response;
-                } else if (response.status === 500 || response.status === 502 || response.status === 503) {
+                } else if (response.status === 500 || response.status === 502 || response.status === 503 || response.status === 429) {
                     console.warn(`[Radaris] Status ${response.status} on attempt ${i + 1}/${retries}. Retrying...`);
-                    await new Promise(r => setTimeout(r, 1000));
+                    await new Promise(r => setTimeout(r, 2000 * Math.pow(2, i)));
                     continue;
                 }
                 
                 return response;
             } catch (error) {
-                const isRetryable = error.message.includes('407') || error.message.includes('429') || error.message.includes('timeout') || error.message.includes('ECONNRESET');
+                const isRetryable = error.message.includes('429') || error.message.includes('timeout') || error.message.includes('ECONNRESET');
                 console.error(`[Radaris] Request Error (Attempt ${i + 1}/${retries}): ${error.message}`);
                 
                 if (i < retries - 1 && isRetryable) {
-                    const delay = 1000 * Math.pow(2, i); // Exponential backoff: 1s, 2s, 4s...
+                    const delay = 2000 * Math.pow(2, i);
                     console.log(`[Radaris] Retrying in ${delay}ms...`);
                     await new Promise(r => setTimeout(r, delay));
                     continue;
@@ -126,28 +108,62 @@ class RadarisScraper {
                     break;
                 }
 
-                const $ = cheerio.load(response.data);
+                let html = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+                let $ = cheerio.load(html);
                 
-                // If only one exact match redirect happens (usually on page 1)
-                if (currentPage === 1 && response.data.includes('SUMMARY')) {
-                    console.log(`[Radaris] Redirected or direct profile found`);
-                    const name = $('h1').first().text().trim();
-                    return [{
-                        fullName: name,
-                        detailLink: response.request.res?.responseUrl || url,
-                        source: 'Radaris',
-                        isDirect: true
-                    }];
+                // DEBUG: Log what we got back
+                const title = $('title').text();
+                const htmlLen = html.length;
+                console.log(`[Radaris] Got HTML: ${htmlLen} chars, title: "${title}"`);
+                
+                // Detect anti-bot homepage redirect and retry once
+                if (title.includes('Background Check') && title.includes('Radaris') && !title.includes('people found')) {
+                    console.log(`[Radaris] ⚠️ Got homepage redirect. Retrying with fresh IP...`);
+                    await this.sleep(1000);
+                    const retryResponse = await this._makeRequest(url);
+                    if (retryResponse.status === 200) {
+                        const retryHtml = typeof retryResponse.data === 'string' ? retryResponse.data : JSON.stringify(retryResponse.data);
+                        const $retry = cheerio.load(retryHtml);
+                        const retryTitle = $retry('title').text();
+                        console.log(`[Radaris] Retry result: "${retryTitle}"`);
+                        if (retryTitle.includes('people found') && !retryTitle.includes('0 people found')) {
+                            // Retry succeeded — swap variables and fall through to normal parsing
+                            html = retryHtml;
+                            $ = $retry;
+                        } else {
+                            break; // Retry also got homepage or no results
+                        }
+                    } else {
+                        break;
+                    }
                 }
 
-                const title = $('title').text();
-                if (title.includes('0 people found') || title.includes('Page not found')) {
+                if ($('title').text().includes('0 people found') || $('title').text().includes('Page not found')) {
+                    console.log(`[Radaris] No results found in title. Breaking.`);
                     break;
                 }
 
                 const pageCandidates = [];
                 // Look for cards, teaser-cards, or anything with a blocks-name inside
                 const cardSelector = '.teaser-card, .card, .blocks-wrapper, .teaser-profile';
+                const cardCount = $(cardSelector).length;
+                console.log(`[Radaris] Cards found with selector '${cardSelector}': ${cardCount}`);
+                
+                // DEBUG: If no cards found, dump all class names to find the right selectors
+                if (cardCount === 0) {
+                    const allClasses = new Set();
+                    $('[class]').each((i, el) => {
+                        $(el).attr('class').split(/\s+/).forEach(c => allClasses.add(c));
+                    });
+                    const classArr = [...allClasses].sort();
+                    console.log(`[Radaris] DEBUG - All CSS classes on page (${classArr.length}): ${classArr.slice(0, 80).join(', ')}`);
+                    // Also look for any links that might be person profile links
+                    const profileLinks = $('a[href*="/p/"], a[href*="/ng/"], a[href*="/~"]');
+                    console.log(`[Radaris] DEBUG - Profile-like links found: ${profileLinks.length}`);
+                    profileLinks.each((i, el) => {
+                        if (i < 5) console.log(`[Radaris] DEBUG - Link ${i}: href=${$(el).attr('href')} text="${$(el).text().trim().substring(0, 60)}"`);
+                    });
+                }
                 $(cardSelector).each((i, el) => {
                     const $el = $(el);
                     
@@ -173,33 +189,12 @@ class RadarisScraper {
                         });
                     }
 
-                    // Relatives extraction
-                    const relatives = [];
-                    $el.find('.nowrap').each((j, rel) => {
-                        const relName = $(rel).text().trim().replace(/,\s*\d+$/, ''); // Remove age
-                        if (relName && !relatives.includes(relName)) relatives.push(relName);
-                    });
-
-                    // JSON-LD fallback for relatives
-                    const jsonLd = $('script[type="application/ld+json"]').first().html();
-                    if (jsonLd) {
-                        try {
-                            const data = JSON.parse(jsonLd);
-                            if (data.relatedTo) {
-                                data.relatedTo.forEach(r => {
-                                    if (r.name && !relatives.includes(r.name)) relatives.push(r.name);
-                                });
-                            }
-                        } catch (e) {}
-                    }
-
                     if (name && detailLink && name.length > 3) {
                         pageCandidates.push({
                             fullName: name,
                             age: age || 'Unknown',
                             location: location || 'Unknown',
                             detailLink: detailLink.startsWith('http') ? detailLink : `https://radaris.com${detailLink}`,
-                            relatives: relatives,
                             source: 'Radaris'
                         });
                     }
